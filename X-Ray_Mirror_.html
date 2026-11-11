@@ -107,6 +107,11 @@
            border-radius:8px; padding:6px 8px; max-width:60%; }
   #data { margin:11px 0 0; padding:9px 11px; background:#0b0f18; border:1px solid var(--line); border-radius:8px;
           font:12px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap; font-variant-numeric:tabular-nums; }
+  input[type=date] { font:inherit; font-size:14px; color:var(--fg); background:#0b0f18; border:1px solid var(--line);
+                     border-radius:8px; padding:5px 8px; max-width:60%; }
+  .ageout { margin-top:10px; font-size:13.5px; color:#cfd6e8; }
+  .ageout b { display:block; font-size:19px; color:var(--accent); font-weight:700; margin-bottom:2px; }
+  .ageout.bad { color:var(--bad); }
   details summary { cursor:pointer; font-size:13px; color:var(--dim); }
   details[open] summary { margin-bottom:10px; }
   .keys { display:grid; grid-template-columns:auto 1fr; gap:5px 12px; font-size:13px; margin:0; }
@@ -217,6 +222,17 @@
     </div>
 
     <div class="panel">
+      <h3>Age</h3>
+      <div class="row"><label for="dob">Date of birth</label><input id="dob" type="date" min="1900-01-01"></div>
+      <div class="ageout" id="dobout" hidden></div>
+      <div class="sep">
+        <button class="ghost" id="ageguess" type="button">Guess my age from my face</button>
+        <div class="ageout" id="guessout" hidden aria-live="polite"></div>
+        <p class="small" style="margin-top:8px">The guess is only for fun and is often off by five years or more. It runs on this computer; your date of birth is not saved.</p>
+      </div>
+    </div>
+
+    <div class="panel">
       <h3>Look</h3>
       <div class="seg" id="style">
         <button data-style="xray">X-ray</button>
@@ -290,6 +306,7 @@
           <dt>M</dt><dd>Mirror on or off</dd>
           <dt>A</dt><dd>Auto-fit to my face</dd>
           <dt>Q</dt><dd>Start or end the quiz</dd>
+          <dt>G</dt><dd>Guess my age from my face</dd>
           <dt>P</dt><dd>Show or hide these controls</dd>
         </dl>
       </details>
@@ -297,6 +314,7 @@
 
     <p class="small">The anatomy is a real 3D dataset of one adult, scaled and pinned to your body. It shows where structures typically sit, not a scan of you, and it is not a medical tool. Video is processed on this computer and never uploaded.</p>
     <p class="small">Anatomy models: BodyParts3D, © The Database Center for Life Science, licensed under CC Attribution-Share Alike 2.1 Japan. Models were simplified and re-aligned.</p>
+    <p class="small">Age guess: the age model from face-api (MIT licence), downloaded the first time you use it.</p>
   </aside>
 </div>
 
@@ -381,6 +399,7 @@ const DEMO = location.hash === "#demo";            // built-in test scene, no ca
 const THREE_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
 const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 const MODELS = "https://storage.googleapis.com/mediapipe-models/";
+const FACEAPI = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.13";   // only loaded when the age guess is used
 const META = JSON.parse($("meshmeta").textContent);
 
 // ------------------------------ settings ------------------------------
@@ -451,7 +470,10 @@ const ASSETS = {
   wasm:   { url: MP + "/wasm/vision_wasm_internal.wasm", type: "application/wasm", est: 9.4e6 },
   face:   { url: MODELS + "face_landmarker/face_landmarker/float16/1/face_landmarker.task", type: "application/octet-stream", est: 3.76e6 },
   hand:   { url: MODELS + "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", type: "application/octet-stream", est: 7.82e6 },
-  pose:   { url: MODELS + "pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", type: "application/octet-stream", est: 5.78e6 }
+  pose:   { url: MODELS + "pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", type: "application/octet-stream", est: 5.78e6 },
+  faceapi: { url: FACEAPI + "/dist/face-api.esm.js", type: "text/javascript", est: 1.33e6 },
+  agejson: { url: FACEAPI + "/model/age_gender_model-weights_manifest.json", type: "application/json", est: 8.4e3 },
+  agebin:  { url: FACEAPI + "/model/age_gender_model.bin", type: "application/octet-stream", est: 4.3e5 }
 };
 let dbPromise = null, cacheWorks = true, usedNetwork = false;
 function db() {
@@ -1474,6 +1496,7 @@ function renderFrame(now, hands, sides, poses) {
   if (lens) { g.strokeStyle = "rgba(127,209,255,.8)"; g.lineWidth = 2; g.beginPath(); g.arc(lens.x, lens.y, lens.r, 0, 6.3); g.stroke(); }
   if (quiz.on) quizFrame(g, now, hands); else if (S.labels) drawLabels(g, lens);
   if (autofit.on) autofitFrame(now);
+  drawAgeTags(g, now);
   if (S.showdata) {
     g.fillStyle = "rgba(127,255,170,.85)";
     for (const h of heads) if (h.found && h.lms) for (const p of h.lms) if (p) g.fillRect(sx(p.x * W) - 1, p.y * H - 1, 2, 2);
@@ -1609,6 +1632,134 @@ function nextCamera() {
   switchCamera(cams[(i + 1) % cams.length].deviceId);
 }
 
+// ------------------------------ age ------------------------------
+// 1) exact age from a date of birth
+function ageFromDob(str, today) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str || ""); if (!m) return null;
+  const by = +m[1], bm = +m[2] - 1, bd = +m[3];
+  if (by < 1900) return null;
+  const b = new Date(by, bm, bd), t = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  if (b.getMonth() !== bm || b > t) return null;
+  // the birthday moved on by n months (the 31st becomes the last day of a shorter month)
+  const addM = n => { const yy = by + Math.floor((bm + n) / 12), mm = (bm + n) % 12;
+                      return new Date(yy, mm, Math.min(bd, new Date(yy, mm + 1, 0).getDate())); };
+  const days = (a, c) => Math.round((c - a) / 864e5);
+  let n = (t.getFullYear() - by) * 12 + t.getMonth() - bm; if (addM(n) > t) n--;
+  const years = Math.floor(n / 12), months = n % 12, d = days(addM(n), t);
+  return { years, months, days: d, total: days(b, t), next: months === 0 && d === 0 ? 0 : days(t, addM((years + 1) * 12)) };
+}
+const plural = (n, w) => n.toLocaleString("en") + " " + w + (n === 1 ? "" : "s");
+let realAge = null;
+function showDob() {
+  const el = $("dobout"), v = $("dob").value;
+  $("dob").max = new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+  const a = v ? ageFromDob(v, new Date()) : null;
+  realAge = a; el.hidden = !v; el.className = "ageout"; el.textContent = "";
+  if (!v) { showGuess(); return; }
+  if (!a) { el.classList.add("bad"); el.textContent = "Pick a date between 1900 and today."; showGuess(); return; }
+  const b = document.createElement("b");
+  b.textContent = plural(a.years, "year") + ", " + plural(a.months, "month") + ", " + plural(a.days, "day");
+  el.append(b, plural(a.total, "day") + " alive. " + (a.next === 0 ? "Happy birthday!" : "Next birthday in " + plural(a.next, "day") + "."));
+  showGuess();
+}
+$("dob").oninput = showDob; $("dob").onchange = showDob;
+
+// 2) a guess from the face, by a small age model that is downloaded the first time it is used
+const AGE = { net: null, loading: null, busy: false, tags: [], found: null, note: "", bad: false };
+async function loadAgeModel() {
+  const fa = await importAsset("faceapi"), tf = fa.tf;
+  let ok = false;
+  try { ok = await tf.setBackend("webgl"); } catch (e) {}
+  if (!ok) await tf.setBackend("cpu");
+  await tf.ready();
+  const [mj, bin] = await Promise.all([getAsset("agejson"), getAsset("agebin")]);
+  const specs = JSON.parse(new TextDecoder().decode(mj)).flatMap(grp => grp.weights);
+  const net = new fa.AgeGenderNet();
+  net.loadFromWeightMap(tf.io.decodeWeights(bin, specs));
+  AGE.net = net;
+}
+// a square cut-out of one tracked face, taken from the camera picture
+function cropFace(h) {
+  const vw = video.videoWidth, vh = video.videoHeight; if (!vw || !vh || !h.lms) return null;
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+  for (const p of h.lms) { if (!p) continue; if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+  const side = Math.max((x1 - x0) * vw, (y1 - y0) * vh) * 1.2;
+  if (!(side >= 48)) return null;                         // too far away to judge
+  const c = document.createElement("canvas"); c.width = c.height = 160;
+  c.getContext("2d").drawImage(video, (x0 + x1) / 2 * vw - side / 2, (y0 + y1) / 2 * vh - side / 2, side, side, 0, 0, 160, 160);
+  return c;
+}
+function showGuess() {
+  const el = $("guessout"); el.textContent = ""; el.className = "ageout" + (AGE.bad ? " bad" : "");
+  el.hidden = !AGE.note && !AGE.found;
+  if (AGE.note) { el.textContent = AGE.note; return; }
+  if (!AGE.found) return;
+  const b = document.createElement("b"), ages = AGE.found;
+  b.textContent = ages.length === 1 ? "About " + plural(ages[0], "year") : ages.map(a => "about " + a).join(", ");
+  let more = ages.length > 1 ? "People in the picture, from left to right." : "";
+  if (ages.length === 1 && realAge) {
+    const d = ages[0] - realAge.years;
+    more = "Your real age is " + realAge.years + ", so the guess is " + (d === 0 ? "spot on." : plural(Math.abs(d), "year") + (d > 0 ? " too high." : " too low."));
+  }
+  el.append(b, more);
+}
+function guessNote(text, bad) { AGE.note = text; AGE.bad = !!bad; AGE.found = text ? null : AGE.found; showGuess(); }
+async function guessAge() {
+  if (AGE.busy) return;
+  if (!running || camLost) { toast("Start the camera first, then ask for the age guess."); return; }
+  AGE.busy = true; $("ageguess").disabled = true; AGE.tags = [];
+  try {
+    if (!AGE.net) {
+      guessNote("Loading the age model (about 2 MB, the first time only)\u2026");
+      try { await (AGE.loading || (AGE.loading = loadAgeModel())); }
+      catch (e) { AGE.loading = null; showProgress(true);
+                  guessNote("Could not load the age model" + (navigator.onLine === false ? " because you are offline." : ": " + (e && e.message || e)), true); return; }
+      showProgress(true);
+    }
+    guessNote("Look at the camera and hold still\u2026");
+    const seen = heads.map(() => []);
+    for (let i = 0; i < 10; i++) {                         // ten looks over about two seconds, then the middle value
+      for (let j = 0; j < heads.length; j++) {
+        const h = heads[j]; if (!h.found) continue;
+        const c = cropFace(h); if (!c) continue;
+        const r = await AGE.net.predictAgeAndGender(c);
+        if (r && isFinite(r.age)) seen[j].push(r.age);
+      }
+      await new Promise(res => setTimeout(res, 150));
+    }
+    const got = [];
+    heads.forEach((h, j) => {
+      const v = seen[j].sort((a, c) => a - c); if (v.length < 4) return;
+      got.push({ h, age: Math.max(1, Math.round(v[v.length >> 1])), x: sx(h.cx * W) });
+    });
+    if (!got.length) { guessNote("I could not see a face clearly. Come closer, face the camera and try again.", true); return; }
+    got.sort((a, c) => a.x - c.x);
+    AGE.note = ""; AGE.bad = false; AGE.found = got.map(r => r.age); showGuess();
+    const until = performance.now() + 9000;
+    AGE.tags = got.map(r => ({ h: r.h, age: r.age, until }));
+  } catch (e) {
+    guessNote("The age guess failed: " + (e && e.message || e), true);
+  } finally { AGE.busy = false; $("ageguess").disabled = false; }
+}
+$("ageguess").onclick = guessAge;
+// the guess floats above each head for a few seconds (so it is in photos and recordings too)
+function drawAgeTags(g, now) {
+  if (!AGE.tags.length) return;
+  AGE.tags = AGE.tags.filter(t => now < t.until);
+  g.save(); g.font = "700 16px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+  for (const t of AGE.tags) {
+    const h = t.h; if (!h.found || !h.lms || !h.lms[10]) continue;
+    const text = "\u2248 " + t.age + (t.age === 1 ? " year" : " years"), w = g.measureText(text).width + 22;
+    const x = clamp(sx(h.cx * W), w / 2 + 4, W - w / 2 - 4), y = Math.max(20, h.lms[10].y * H - h.size * W * 0.55);
+    g.globalAlpha = Math.min(1, (t.until - now) / 600);
+    g.fillStyle = "rgba(9,12,19,.85)"; g.strokeStyle = "#7fd1ff"; g.lineWidth = 1.5;
+    g.beginPath(); if (g.roundRect) g.roundRect(x - w / 2, y - 15, w, 30, 9); else g.rect(x - w / 2, y - 15, w, 30);
+    g.fill(); g.stroke();
+    g.fillStyle = "#eef1f8"; g.fillText(text, x, y + 1);
+  }
+  g.restore();
+}
+
 // ------------------------------ buttons and keyboard ------------------------------
 function toggleFull() {
   const el = $("stagecol"), cur = document.fullscreenElement || document.webkitFullscreenElement;
@@ -1637,6 +1788,7 @@ window.addEventListener("keydown", e => {
   else if (k === "m") { S.mirror = !S.mirror; save(); syncUI(); }
   else if (k === "a") autofitStart();
   else if (k === "q") quizToggle();
+  else if (k === "g") guessAge();
   else if (k === "p") togglePanel();
   else if (k === "escape") hideInfo();
   else return;
