@@ -6,7 +6,7 @@
 
 A single HTML file. No install, no account, no server. Your video never leaves your device.
 
-[**Try the live demo**](https://sowpnil-roy.github.io/X-Ray/X-Ray_Mirror%20.html) · [Demo scene without a camera](https://sowpnil-roy.github.io/X-Ray/X-Ray_Mirror%20.html#demo)
+[**Try the live demo**](https://x-ray-roy.netlify.app/) · [Demo scene without a camera](https://sowpnil-roy.github.io/X-Ray/X-Ray_Mirror%20.html#demo)
 
 <img src="screenshots/hero.png" alt="X-Ray Mirror showing an x-ray skull and hand bones next to the control panel" width="900">
 
